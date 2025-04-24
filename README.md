@@ -13,7 +13,7 @@ Communication is handled by raw socket interface.
 - Automatically connects to the server  
 - Allows bidirectional communication with the server  
 
-### Trojan funtionalities
+### Trojan functionalities
 - Clipboard content replacement under specific condition - bank account number – implemented with using hooks, message handling  
 - Simple ping test
 - Basic system info
