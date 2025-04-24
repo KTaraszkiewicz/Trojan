@@ -1,0 +1,7 @@
+g++ -o klient.exe klient.cpp -lws2_32 -std=c++11
+g++ serwerGUI.cpp -o serwer -lws2_32 -lcomctl32 -lgdi32 -std=c++11 -mwindows
+g++ -o serwer.exe serwer.cpp -lws2_32 -std=c++11
+
+prześlij kase na te konto PL12345678901234567890123456
+PL12345678901234567890123456
+PL00000000000000000000000000
