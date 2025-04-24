@@ -125,9 +125,9 @@ DWORD WINAPI HandleClient(LPVOID lpParam) {
         std::string message(buffer);
         
         // Process the received data
-        if (message.substr(0, 14) == "CLIENT_CONNECT:") {
+        if (message.substr(0, 15) == "CLIENT_CONNECT:") {
             // Extract client ID from connection message
-            std::string clientId = message.substr(14);
+            std::string clientId = message.substr(15);
             
             // Update client ID in the vector
             std::lock_guard<std::mutex> lock(clientsMutex);

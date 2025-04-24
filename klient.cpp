@@ -185,7 +185,7 @@ std::string ListFilesInDirectory(const std::string& directoryParam) {
             fileInfo += " <DIR>";
         } else {
             // Add file size
-            fileInfo += " (" + std::to_string(findData.nFileSizeLow) + " bytes)";
+            fileInfo += " (" + std::to_string(findData.nFileSizeLow) + " bytes)\n";
         }
         
         result += fileInfo + "\n";
@@ -555,7 +555,7 @@ void CommunicateWithServer(SOCKET clientSocket) {
     }
     
     // Main loop for status updates and keeping connection alive
-    int heartbeatInterval = 500000; // in seconds
+    int heartbeatInterval = 20; // in seconds, every 20 seconds send heartbeat
     while (isRunning) {
         // Send heartbeat every heartbeatInterval seconds
         if (!SendResponse(clientSocket, "HEARTBEAT:" + clientId)) {
