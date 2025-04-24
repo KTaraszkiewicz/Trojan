@@ -19,3 +19,4 @@ Communication is handled by raw socket interface.
 - Basic system info
 - List of files in directory given by attacker
 - Content of file given by attacker
+- Log of all activities
